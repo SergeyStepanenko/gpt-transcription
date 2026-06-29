@@ -2,20 +2,23 @@
 """Push-to-talk dictation. Hold Right Command to record the mic; release to transcribe
 and paste the text into the focused field (Cmd+V), saving and restoring the clipboard.
 Ctrl-C in the terminal quits. Mic: env MIC overrides; default = built-in MacBook mic (auto-detected)."""
-import os, subprocess, threading, time, pathlib
+import os, sys, subprocess, threading, time, pathlib
 from pynput import keyboard
+from AppKit import NSSound
 from transcribe import transcribe
 
 HERE = pathlib.Path(__file__).parent
 OUT = HERE / "_ptt.webm"
 
 
-def pick_audio_index(listing, want="MacBook"):
-    """Find the avfoundation *audio* device index whose name contains `want`.
-    Indices restart per section, so only scan lines after 'audio devices:'.
-    Returns the index string, or None if not found."""
+def list_audio_devices():
+    """[(index, name)] for every avfoundation *audio* input. Indices restart per section,
+    so only scan lines after 'audio devices:'. Device list goes to ffmpeg's stderr."""
     import re
-    in_audio = False
+    listing = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True).stderr
+    out, in_audio = [], False
     for line in listing.splitlines():
         if "audio devices:" in line:
             in_audio = True
@@ -26,31 +29,74 @@ def pick_audio_index(listing, want="MacBook"):
         if not in_audio:
             continue
         m = re.search(r"\[(\d+)\]\s*(.+?)\s*$", line)
-        if m and want.lower() in m.group(2).lower():
-            return m.group(1)
-    return None
+        if m:
+            out.append((m.group(1), m.group(2)))
+    return out
 
 
-def resolve_mic():
-    """MIC env overrides; otherwise auto-detect the built-in MacBook mic, fall back to '1'."""
+def _arrow_select(labels, default_i):
+    """Arrow-key picker over `labels`, starting on default_i. ↑/↓ move, Enter confirms,
+    Ctrl-C aborts. Raw terminal mode (termios) so single keystrokes register without Enter.
+    Returns the chosen index. Caller guarantees stdin is a tty."""
+    import termios, tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sel = default_i
+
+    def render(first):
+        if not first:
+            sys.stdout.write(f"\033[{len(labels)}A")  # cursor up to redraw in place
+        for i, lab in enumerate(labels):
+            row = ("\033[7m❯ " + lab + "\033[0m") if i == sel else "  " + lab
+            sys.stdout.write("\033[2K" + row + "\r\n")  # \033[2K clears the line
+        sys.stdout.flush()
+
+    try:
+        tty.setraw(fd)
+        render(True)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b" and sys.stdin.read(1) == "[":
+                arrow = sys.stdin.read(1)
+                sel = (sel - 1) % len(labels) if arrow == "A" else \
+                      (sel + 1) % len(labels) if arrow == "B" else sel
+            elif ch in ("\r", "\n"):
+                return sel
+            elif ch == "\x03":
+                raise KeyboardInterrupt
+            render(False)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def choose_mic(devices, want="MacBook"):
+    """Arrow-key pick of the audio input. Default highlight = built-in MacBook mic (else first).
+    MIC env overrides and skips the menu; non-tty launch silently takes the default."""
     env = os.environ.get("MIC")
     if env:
         return env
-    listing = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
-        capture_output=True, text=True).stderr  # device list goes to stderr
-    return pick_audio_index(listing) or "1"
+    if not devices:
+        return "1"  # nothing parsed — fall back to the usual built-in index
+    default_i = next((k for k, (_, n) in enumerate(devices) if want.lower() in n.lower()), 0)
+    if not sys.stdin.isatty():
+        return devices[default_i][0]
+    print("Select mic  (↑/↓ to move, Enter to confirm):")
+    labels = [f"[{i}] {n}" for i, n in devices]
+    sel = _arrow_select(labels, default_i)
+    return devices[sel][0]
 
 
-MIC = resolve_mic()
+MIC = None  # set interactively in __main__ before warm_start()
 
 state = {"rec": False, "busy": False}
 _kb = keyboard.Controller()
 _V = keyboard.KeyCode.from_vk(9)  # kVK_ANSI_V — physical V key, layout-independent
 
-# Audio cues — built-in macOS sounds, played non-blocking so they never delay the hot path.
-START_SOUND = "/System/Library/Sounds/Morse.aiff"   # press
-STOP_SOUND = "/System/Library/Sounds/Bottle.aiff"   # release
+# Audio cues — preloaded NSSound objects. Decoding happens once at import, so play() is
+# near-instant: no per-press `afplay` process spawn (~0.3s) and no cold CoreAudio start.
+# prime_sounds() at startup wakes the output device so the *first* press is instant too.
+_snd_start = NSSound.alloc().initWithContentsOfFile_byReference_("/System/Library/Sounds/Morse.aiff", True)   # press
+_snd_stop = NSSound.alloc().initWithContentsOfFile_byReference_("/System/Library/Sounds/Bottle.aiff", True)   # release
 
 # Persistent warm capture: one ffmpeg holds the mic open and streams raw PCM, so a key press
 # just flips a flag (instant) instead of cold-starting avfoundation (~1s) on every press.
@@ -107,10 +153,22 @@ def warm_start():
     threading.Thread(target=reader, daemon=True).start()
 
 
-def beep(sound):
-    # fire-and-forget; the orphan afplay exits on its own. Output muted so it can't spam the terminal.
-    subprocess.Popen(["afplay", sound],
-                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+def beep(snd):
+    # Preloaded NSSound: stop() rewinds if a prior cue is still playing, play() returns immediately.
+    snd.stop()
+    snd.play()
+
+
+def prime_sounds():
+    # Play both cues silently once so CoreAudio's output device is awake before the first real press
+    # (a cold device adds ~0.2-0.3s to the very first play). volume 0 = inaudible; restore after.
+    for s in (_snd_start, _snd_stop):
+        s.setVolume_(0.0)
+        s.play()
+    time.sleep(0.3)
+    for s in (_snd_start, _snd_stop):
+        s.stop()
+        s.setVolume_(1.0)
 
 
 def encode(pcm):
@@ -143,7 +201,7 @@ def on_press(key):
     with _buf_lock:
         _buf.clear()
     state["rec"] = True  # device already warm — reader appends from the next chunk, no cold start
-    beep(START_SOUND)    # the warm mic may catch a faint tick at the very start (ceiling) — harmless
+    beep(_snd_start)     # the warm mic may catch a faint tick at the very start (ceiling) — harmless
     print("● recording...")
 
 
@@ -151,7 +209,7 @@ def on_release(key):
     if not is_right_cmd(key) or not state["rec"]:
         return
     state["rec"] = False
-    beep(STOP_SOUND)  # after rec=False, so it's never captured into the recording
+    beep(_snd_stop)  # after rec=False, so it's never captured into the recording
     state["busy"] = True
     print("■ stop, transcribing...")
     try:
@@ -175,7 +233,9 @@ def on_release(key):
 
 if __name__ == "__main__":
     ensure_accessibility()
-    warm_start()  # open the mic now so the very first press records instantly
+    MIC = choose_mic(list_audio_devices())  # ask which mic before opening it
+    warm_start()     # open the chosen mic now so the very first press records instantly
+    prime_sounds()   # wake CoreAudio so the first cue plays instantly too
     print(f"Push-to-talk ready. Mic [{MIC}]. Hold Right Command to record. Ctrl-C to quit.")
     try:
         with keyboard.Listener(on_press=on_press, on_release=on_release) as l:
