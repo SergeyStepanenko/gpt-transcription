@@ -1,71 +1,76 @@
-# gpt-transcription — заметки/инсайты
+# gpt-transcription — notes / insights
 
-Реплей приватного эндпоинта голосового ввода ChatGPT (`/backend-api/transcribe`):
-запись микрофона → WebM/Opus → POST со своими куками → `{"text": "..."}`.
+Replays ChatGPT's private voice-input endpoint (`/backend-api/transcribe`):
+record mic → WebM/Opus → POST with your own cookies → `{"text": "..."}`.
 
-## Формат аудио (как читается из байтов)
+## Audio format (as read from the bytes)
 
-- `\x1a\x45\xdf\xa3` в начале — **EBML magic** (`0x1A45DFA3`), сигнатура Matroska/WebM.
-- `B\x82\x84webm` — DocType = `webm`. Рядом `EncoderWA...Chrome` — кем писалось.
-- `A_OPUS` + `OpusHead\x01\x01...` — кодек **Opus**: `\x01` каналов = mono, sample rate **48 kHz**.
-- Блоки `\xa3` (**SimpleBlock**) — сжатые Opus-фреймы, собственно звук.
-- WebM = подмножество Matroska. Дерево EBML (бинарный XML): `ID + длина + данные`.
-  Поэтому `OpusHead`/`webm` читаются как ASCII прямо в потоке, а звук между ними — нет.
-- `ffmpeg -f avfoundation -i ":1" -c:a libopus -ac 1 -ar 48000 out.webm` даёт **байт-в-байт**
-  тот же формат, что MediaRecorder в Chrome (mono/48k Opus — дефолт Chrome для голоса).
+- `\x1a\x45\xdf\xa3` at the start — **EBML magic** (`0x1A45DFA3`), the Matroska/WebM signature.
+- `B\x82\x84webm` — DocType = `webm`. Nearby `EncoderWA...Chrome` — what wrote it.
+- `A_OPUS` + `OpusHead\x01\x01...` — the **Opus** codec: `\x01` channels = mono, sample rate **48 kHz**.
+- `\xa3` blocks (**SimpleBlock**) — compressed Opus frames, the actual audio.
+- WebM is a subset of Matroska. EBML tree (binary XML): `ID + length + data`.
+  That's why `OpusHead`/`webm` read as ASCII right in the stream, but the audio between them does not.
+- `ffmpeg -f avfoundation -i ":1" -c:a libopus -ac 1 -ar 48000 out.webm` produces the **byte-for-byte**
+  same format as Chrome's MediaRecorder (mono/48k Opus — Chrome's default for voice).
 
-## Содержимое речи из сырых байтов узнать нельзя
+## You can't read the speech out of the raw bytes
 
-Это сжатые Opus-фреймы (психоакустический кодек), не текст. Нужно реально декоднуть:
-`ffmpeg webm → PCM`, затем ASR (Whisper). По байтам слова не «прочитать».
+These are compressed Opus frames (a psychoacoustic codec), not text. You have to actually decode:
+`ffmpeg webm → PCM`, then ASR (Whisper). You can't "read" words out of the bytes.
 
-## Авторизация: Bearer ≠ приватный ключ
+## Auth: Bearer ≠ a private key
 
-- `authorization: Bearer eyJ...` — токен-**предъявитель**. Кто строку держит — тот и ты для сервера.
-  Как ключ от квартиры: замок не проверяет чей, только что подходит.
-- JWT внутри подписан **серверным** приватным ключом OpenAI — подделать/выпустить свой нельзя.
-  Но и не надо: токен уже выдан, лежит в запросе целиком.
-- Свой токен берётся из залогиненного ChatGPT (DevTools → Network → Copy as cURL).
-  Чужой не сфабриковать.
+- `authorization: Bearer eyJ...` is a **bearer** token. Whoever holds the string is "you" to the server.
+  Like an apartment key: the lock doesn't check whose it is, only that it fits.
+- The JWT inside is signed with OpenAI's **server-side** private key — you can't forge or mint your own.
+  You don't need to: the token is already issued and sits in the request whole.
+- You get your own token from a logged-in ChatGPT (DevTools → Network → Copy as cURL).
+  You can't fabricate someone else's.
 
-## Cloudflare: голый curl не пройдёт (главный камень)
+## Cloudflare: bare curl won't get through (the main gotcha)
 
-- 403 с `cf-mitigated: challenge` — Cloudflare bot-management снимает **отпечаток TLS-рукопожатия**
-  (JA3/JA4) и порядок HTTP/2-фреймов. У Chrome отпечаток один, у системного curl
-  (LibreSSL/SecureTransport) — совсем другой.
-- `cf_clearance` привязан к отпечатку клиента, что решал челлендж, **и к IP**. Шлёшь его из curl →
-  отпечаток не тот → повторный challenge → 403. Заголовки и куки НЕ спасают: палят байты рукопожатия.
-- Чинится подделкой отпечатка: **`curl_cffi`** (форк libcurl, копирует ClientHello + HTTP/2-профиль
-  Chrome). Те же куки, тот же запрос — разница только в TLS → 200.
-- `curl_cffi` 0.15 сменил API: multipart через **`CurlMime`**, а не `files=` (`NotImplementedError`).
+- A 403 with `cf-mitigated: challenge` — Cloudflare bot-management fingerprints the **TLS handshake**
+  (JA3/JA4) and the HTTP/2 frame order. Chrome has one fingerprint, the system curl
+  (LibreSSL/SecureTransport) a completely different one.
+- `cf_clearance` is bound to the fingerprint of the client that solved the challenge, **and to the IP**.
+  Send it from curl → wrong fingerprint → another challenge → 403. Headers and cookies don't help: it's
+  the handshake bytes that give you away.
+- Fixed by faking the fingerprint: **`curl_cffi`** (a libcurl fork that copies Chrome's ClientHello +
+  HTTP/2 profile). Same cookies, same request — the only difference is the TLS → 200.
+- `curl_cffi` 0.15 changed the API: multipart goes through **`CurlMime`**, not `files=` (`NotImplementedError`).
 
-## Эксплуатация / протухание
+## Operation / expiry
 
-- Куки и токен живут **дни**. Не-200 → обнови `creds.env` из свежего DevTools.
-- `cf_clearance` **IP-bound**: сменил сеть/VPN → снова challenge, нужен свежий с того же IP.
-- Эндпоинт приватный, OpenAI стабильность не обещает — может смениться путь/заголовки/защита.
-  Нужна надёжность → официальный `/v1/audio/transcriptions` (ключ `sk-`, без Cloudflare-стены).
-- Креды в `creds.env` (в `.gitignore`), не в коде — иначе утекут в git-историю.
+- Cookies and token live for **days**. Non-200 → refresh `creds.env` from a fresh DevTools copy.
+- `cf_clearance` is **IP-bound**: change network/VPN → another challenge, need a fresh one from the same IP.
+- The endpoint is private, OpenAI promises no stability — the path/headers/protection can change.
+  Need reliability → the official `/v1/audio/transcriptions` (an `sk-` key, no Cloudflare wall).
+- Credentials live in `creds.env` (in `.gitignore`), not in code — otherwise they leak into git history.
 
-## Окружение
+## Environment
 
-- macOS Python = externally-managed (PEP 668) → ставим в **venv** (`.venv/`), не `--break-system-packages`.
-- Микрофоны: `ffmpeg -f avfoundation -list_devices true -i ""`. Дефолт `[1] MacBook Pro Microphone`.
+- macOS Python is externally-managed (PEP 668) → install into a **venv** (`.venv/`), not `--break-system-packages`.
+- Mics: `ffmpeg -f avfoundation -list_devices true -i ""`. Default `[1] MacBook Pro Microphone`.
 
-## Push-to-talk (диктовка на Right Option)
+## Push-to-talk (dictation on Right Option)
 
-- Глобальный hold-хоткей — `pynput` (keyDown/keyUp). Right Option = `Key.alt_r` / vk `61`
-  (Left Option = vk `58`). Зажатие шлёт повтор `on_press` — старт пишем по флагу, не каждый раз.
-- Остановка ffmpeg — **SIGINT**, не SIGKILL: ffmpeg ловит SIGINT и дописывает EBML-трейлер,
-  файл валиден. KILL → обрезанный/нефинализированный webm.
-- Вставка с сохранением буфера: `pbpaste` (сохранить) → `pbcopy` текст → **`Cmd+V` через pynput
-  Controller** (тот же процесс, что слушает клавиши) → пауза → `pbcopy` назад. `pbpaste`/`pbcopy` —
-  **только текст**: картинка/файлы в буфере не сохранятся (ceiling; если надо — AppleScript с типами clipboard).
-- **Почему не osascript:** `osascript ... keystroke "v"` падал с `1002 not allowed to send keystrokes` —
-  отдельный бинарь не наследует TCC-грант Accessibility ответственного процесса. Шлём `Cmd+V` из самого
-  python-процесса (у него уже есть event-tap) → грант нужен только одному приложению (терминалу).
-- Права macOS — **две разные** привилегии: **Input Monitoring** (pynput слушает Right Option, запись)
-  и **Accessibility/Универсальный доступ** (синтез `Cmd+V`). Запись может идти, а вставка молчать —
-  это значит дан только Input Monitoring. `ensure_accessibility()` на старте поднимает системный диалог
-  (`AXIsProcessTrustedWithOptions` + prompt) и добавляет ответственное приложение в список Accessibility.
-- Плюс **Микрофон** для ffmpeg.
+- The global hold-hotkey is `pynput` (keyDown/keyUp). Right Option = `Key.alt_r` / vk `61`
+  (Left Option = vk `58`). Holding sends repeated `on_press` — start recording on a flag, not every time.
+- Stopping ffmpeg uses **SIGINT**, not SIGKILL: ffmpeg catches SIGINT and finalizes the EBML trailer,
+  so the file is valid. KILL → a truncated/unfinalized webm.
+- Paste with clipboard save/restore: `pbpaste` (save) → `pbcopy` text → **`Cmd+V` via the pynput
+  Controller** (same process that listens to keys) → pause → `pbcopy` back. `pbpaste`/`pbcopy` are
+  **text only**: images/files on the clipboard won't be preserved (ceiling; if needed — AppleScript with clipboard types).
+- **Why not osascript:** `osascript ... keystroke "v"` failed with `1002 not allowed to send keystrokes` —
+  a separate binary doesn't inherit the responsible process's Accessibility TCC grant. We send `Cmd+V` from
+  the python process itself (it already holds the event tap) → the grant is needed for one app only (the terminal).
+- **Why press by keycode, not the char:** `Controller.press("v")` maps the *character* to a keycode using
+  the *current* layout. On a non-Latin layout (e.g. Russian ЙЦУКЕН) there's no key for Latin v, so pynput
+  falls back to vk 0 = the **A** key → `Cmd+A` (select all) instead of paste. We press vk 9 (`kVK_ANSI_V`,
+  the physical V key), which is layout-independent.
+- macOS permissions — **two distinct** privileges: **Input Monitoring** (pynput listens for Right Option,
+  recording) and **Accessibility** (synthesizing `Cmd+V`). Recording can work while paste stays silent —
+  that means only Input Monitoring was granted. `ensure_accessibility()` raises the system dialog on start
+  (`AXIsProcessTrustedWithOptions` + prompt) and adds the responsible app to the Accessibility list.
+- Plus **Microphone** for ffmpeg.

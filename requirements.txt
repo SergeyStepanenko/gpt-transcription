@@ -1,0 +1,5 @@
+# Direct dependencies. pynput pulls in the other pyobjc frameworks (Quartz, Cocoa) on macOS;
+# ApplicationServices is listed explicitly because ensure_accessibility() imports from it.
+curl_cffi==0.15.0
+pynput==1.8.2
+pyobjc-framework-ApplicationServices==12.2.1

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Push-to-talk диктовка. Держи Right Option — пишется микрофон; отпустил — транскрипция,
-текст вставляется в активное поле (Cmd+V) с сохранением и восстановлением буфера обмена.
-Ctrl-C в терминале — выход. Микрофон: env MIC (дефолт 1)."""
+"""Push-to-talk dictation. Hold Right Option to record the mic; release to transcribe
+and paste the text into the focused field (Cmd+V), saving and restoring the clipboard.
+Ctrl-C in the terminal quits. Mic: env MIC (default 1)."""
 import os, signal, subprocess, time, pathlib
 from pynput import keyboard
 from transcribe import transcribe
@@ -12,27 +12,27 @@ MIC = os.environ.get("MIC", "1")
 
 state = {"rec": False, "busy": False, "proc": None}
 _kb = keyboard.Controller()
-_V = keyboard.KeyCode.from_vk(9)  # kVK_ANSI_V — физическая клавиша V, не зависит от раскладки
+_V = keyboard.KeyCode.from_vk(9)  # kVK_ANSI_V — physical V key, layout-independent
 
 
 def ensure_accessibility():
-    """Cmd+V требует право Accessibility (Универсальный доступ) — отдельное от Input Monitoring,
-    на котором работает запись. Без него вставка тихо не сработает. Проверяем и поднимаем
-    системный диалог добавления приложения в список."""
+    """Cmd+V needs the Accessibility permission — separate from Input Monitoring, which
+    is what recording uses. Without it the paste silently does nothing. Check it and raise
+    the system dialog that adds this app to the Accessibility list."""
     try:
         from ApplicationServices import (AXIsProcessTrustedWithOptions,
                                           kAXTrustedCheckOptionPrompt)
         trusted = AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
     except Exception:
-        return  # не смогли проверить — не мешаем работе
+        return  # could not check — don't get in the way
     if not trusted:
-        print("⚠️  Нет права Accessibility — вставка (Cmd+V) не сработает (запись будет идти).")
-        print("    System Settings → Privacy & Security → Accessibility: включи приложение,")
-        print("    из которого запускаешь dictate.sh (диалог уже открыт). Потом перезапусти скрипт.")
+        print("⚠️  No Accessibility permission — paste (Cmd+V) won't work (recording still will).")
+        print("    System Settings → Privacy & Security → Accessibility: enable the app")
+        print("    you launch dictate.sh from (the dialog is already open). Then restart the script.")
 
 
 def is_right_option(key):
-    # Right Option: pynput Key.alt_r или keycode vk 61 (Left Option = 58)
+    # Right Option: pynput Key.alt_r or keycode vk 61 (Left Option = 58)
     return key == keyboard.Key.alt_r or getattr(key, "vk", None) == 61
 
 
@@ -45,7 +45,7 @@ def start_record():
 
 
 def stop_record(proc):
-    # SIGINT, не kill: ffmpeg дописывает EBML-трейлер, файл валиден
+    # SIGINT, not kill: ffmpeg finalizes the EBML trailer, so the file stays valid
     proc.send_signal(signal.SIGINT)
     try:
         proc.wait(timeout=5)
@@ -54,26 +54,26 @@ def stop_record(proc):
 
 
 def paste_text(text):
-    # pbpaste/pbcopy — только текст; картинка/файлы в буфере не сохранятся (ceiling)
+    # pbpaste/pbcopy — text only; images/files on the clipboard won't be preserved (ceiling)
     old = subprocess.run(["pbpaste"], capture_output=True).stdout
     subprocess.run(["pbcopy"], input=text.encode())
-    # Cmd+V шлём из этого же процесса через pynput — у него уже есть event-tap.
-    # osascript падал с 1002: отдельный бинарь не наследует TCC-грант Accessibility.
-    # Жмём по vk 9 (физическая V), не по символу "v": при русской раскладке pynput не
-    # находит keycode для латинской v и откатывается на vk 0 = клавиша A -> Cmd+A (выделить всё).
+    # Send Cmd+V from this same process via pynput — it already holds the event tap.
+    # osascript failed with 1002: a separate binary doesn't inherit the Accessibility TCC grant.
+    # Press by vk 9 (physical V), not the char "v": on a non-Latin layout (e.g. Russian) pynput
+    # can't find a keycode for Latin v and falls back to vk 0 = the A key -> Cmd+A (select all).
     with _kb.pressed(keyboard.Key.cmd):
         _kb.press(_V)
         _kb.release(_V)
-    time.sleep(0.2)  # дать вставке проскочить до восстановления
+    time.sleep(0.2)  # let the paste land before restoring the clipboard
     subprocess.run(["pbcopy"], input=old)
 
 
 def on_press(key):
     if not is_right_option(key) or state["rec"] or state["busy"]:
-        return  # повтор зажатой клавиши / занято — игнор
+        return  # key-repeat while held / busy — ignore
     state["rec"] = True
     state["proc"] = start_record()
-    print("● запись...")
+    print("● recording...")
 
 
 def on_release(key):
@@ -81,7 +81,7 @@ def on_release(key):
         return
     state["rec"] = False
     state["busy"] = True
-    print("■ стоп, транскрибирую...")
+    print("■ stop, transcribing...")
     try:
         stop_record(state["proc"])
         if OUT.exists() and OUT.stat().st_size > 2000:
@@ -90,22 +90,22 @@ def on_release(key):
                 paste_text(text)
                 print(f"→ {text!r}")
             else:
-                print("(пусто)")
+                print("(empty)")
         else:
-            print("(слишком коротко)")
+            print("(too short)")
     except Exception as e:
-        print("ошибка:", e)
+        print("error:", e)
     finally:
         state["busy"] = False
 
 
 if __name__ == "__main__":
     ensure_accessibility()
-    print(f"Push-to-talk готов. Микрофон [{MIC}]. Держи Right Option для записи. Ctrl-C — выход.")
+    print(f"Push-to-talk ready. Mic [{MIC}]. Hold Right Option to record. Ctrl-C to quit.")
     try:
         with keyboard.Listener(on_press=on_press, on_release=on_release) as l:
             l.join()
     except KeyboardInterrupt:
         if state["proc"] and state["proc"].poll() is None:
-            state["proc"].kill()  # не оставлять висящий ffmpeg, если жали Ctrl-C во время записи
-        print("\nпока")
+            state["proc"].kill()  # don't leave a stray ffmpeg if Ctrl-C was hit mid-recording
+        print("\nbye")
