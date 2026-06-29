@@ -28,18 +28,22 @@ def transcribe(audio: pathlib.Path) -> str:
     mp = CurlMime()
     mp.addpart(name="file", filename="whisper.webm",
                content_type="audio/webm;codecs=opus", data=audio.read_bytes())
-    r = requests.post(
-        "https://chatgpt.com/backend-api/transcribe",
-        headers={
-            "authorization": f"Bearer {env['TOKEN']}",
-            "chatgpt-account-id": env["ACCOUNT_ID"],
-            "cookie": env["COOKIES"],
-            "origin": "https://chatgpt.com",
-            "referer": "https://chatgpt.com/",
-        },
-        multipart=mp,
-        impersonate="chrome",  # TLS/HTTP2-отпечаток Chrome — иначе Cloudflare 403
-    )
+    try:
+        r = requests.post(
+            "https://chatgpt.com/backend-api/transcribe",
+            headers={
+                "authorization": f"Bearer {env['TOKEN']}",
+                "chatgpt-account-id": env["ACCOUNT_ID"],
+                "cookie": env["COOKIES"],
+                "origin": "https://chatgpt.com",
+                "referer": "https://chatgpt.com/",
+            },
+            multipart=mp,
+            impersonate="chrome",  # TLS/HTTP2-отпечаток Chrome — иначе Cloudflare 403
+            timeout=30,  # дефолт curl_cffi = None: без таймаута ptt застрянет в busy навсегда
+        )
+    finally:
+        mp.close()  # освободить libcurl mime-хендл — transcribe зовётся на каждую диктовку
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return r.json().get("text", "")

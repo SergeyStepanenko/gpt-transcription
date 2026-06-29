@@ -12,6 +12,7 @@ MIC = os.environ.get("MIC", "1")
 
 state = {"rec": False, "busy": False, "proc": None}
 _kb = keyboard.Controller()
+_V = keyboard.KeyCode.from_vk(9)  # kVK_ANSI_V — физическая клавиша V, не зависит от раскладки
 
 
 def ensure_accessibility():
@@ -58,9 +59,11 @@ def paste_text(text):
     subprocess.run(["pbcopy"], input=text.encode())
     # Cmd+V шлём из этого же процесса через pynput — у него уже есть event-tap.
     # osascript падал с 1002: отдельный бинарь не наследует TCC-грант Accessibility.
+    # Жмём по vk 9 (физическая V), не по символу "v": при русской раскладке pynput не
+    # находит keycode для латинской v и откатывается на vk 0 = клавиша A -> Cmd+A (выделить всё).
     with _kb.pressed(keyboard.Key.cmd):
-        _kb.press("v")
-        _kb.release("v")
+        _kb.press(_V)
+        _kb.release(_V)
     time.sleep(0.2)  # дать вставке проскочить до восстановления
     subprocess.run(["pbcopy"], input=old)
 
@@ -99,5 +102,10 @@ def on_release(key):
 if __name__ == "__main__":
     ensure_accessibility()
     print(f"Push-to-talk готов. Микрофон [{MIC}]. Держи Right Option для записи. Ctrl-C — выход.")
-    with keyboard.Listener(on_press=on_press, on_release=on_release) as l:
-        l.join()
+    try:
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as l:
+            l.join()
+    except KeyboardInterrupt:
+        if state["proc"] and state["proc"].poll() is None:
+            state["proc"].kill()  # не оставлять висящий ffmpeg, если жали Ctrl-C во время записи
+        print("\nпока")
