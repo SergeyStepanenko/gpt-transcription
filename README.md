@@ -18,9 +18,11 @@ not ours.
 ## How it works
 
 ```
-hold Right Option ──► ffmpeg records mic ──► WebM/Opus (mono, 48 kHz)
-       │                                            │
-   release ────────────────────────────────────────┘
+startup: ffmpeg holds the mic open, streaming raw PCM ──► reader thread (discards until recording)
+       │
+hold Right Command ─► flag flips, thread keeps PCM (instant — no device cold start)
+       │
+   release ─► encode buffered PCM ──► WebM/Opus (mono, 48 kHz)
        │
        ▼
  POST to chatgpt.com/backend-api/transcribe   ← with your cookies + a Chrome TLS fingerprint
@@ -82,7 +84,7 @@ These expire within days — if you start getting `401`/`403`, copy fresh ones.
 Grant these to **the terminal app you launch the script from** (Terminal, iTerm, VS Code, …):
 
 - **Microphone** — for `ffmpeg` to record.
-- **Input Monitoring** — for the global Right Option hotkey.
+- **Input Monitoring** — for the global Right Command hotkey.
 - **Accessibility** — to synthesize `Cmd+V`. On first run a system dialog pops up; enable the app,
   then **restart the script** (macOS only re-checks the permission at process start).
 
@@ -94,8 +96,10 @@ Grant these to **the terminal app you launch the script from** (Terminal, iTerm,
 ./dictate.sh
 ```
 
-Hold **Right Option**, speak, release. The text is transcribed and pasted where your cursor is.
-`Ctrl-C` to quit. Pick a different mic with `MIC=2 ./dictate.sh`
+Hold **Right Command**, speak, release. The text is transcribed and pasted where your cursor is.
+Recording starts instantly because the mic is opened at startup and kept warm — so the **mic stays
+active (orange indicator on) the whole time the script runs**; `Ctrl-C` releases it.
+Pick a different mic with `MIC=2 ./dictate.sh`
 (list devices: `ffmpeg -f avfoundation -list_devices true -i ""`).
 
 **One-shot helpers:**

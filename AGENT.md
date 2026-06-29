@@ -53,12 +53,20 @@ These are compressed Opus frames (a psychoacoustic codec), not text. You have to
 - macOS Python is externally-managed (PEP 668) → install into a **venv** (`.venv/`), not `--break-system-packages`.
 - Mics: `ffmpeg -f avfoundation -list_devices true -i ""`. Default `[1] MacBook Pro Microphone`.
 
-## Push-to-talk (dictation on Right Option)
+## Push-to-talk (dictation on Right Command)
 
-- The global hold-hotkey is `pynput` (keyDown/keyUp). Right Option = `Key.alt_r` / vk `61`
-  (Left Option = vk `58`). Holding sends repeated `on_press` — start recording on a flag, not every time.
-- Stopping ffmpeg uses **SIGINT**, not SIGKILL: ffmpeg catches SIGINT and finalizes the EBML trailer,
-  so the file is valid. KILL → a truncated/unfinalized webm.
+- The global hold-hotkey is `pynput` (keyDown/keyUp). Right Command = `Key.cmd_r` / vk `54`
+  (Left Command = vk `55`). Holding sends repeated `on_press` — start recording on a flag, not every time.
+- **Warm capture (instant start):** a single ffmpeg opened at startup (`warm_start`) holds the mic open
+  and streams raw `s16le` PCM to stdout; a daemon thread drains the pipe and appends bytes to `_buf` only
+  while `state['rec']` is set. A key press just flips the flag → recording starts in ~0ms instead of
+  cold-starting avfoundation (~1s) on every press. **Cost:** the mic stays active the whole time the
+  script runs (macOS shows the orange indicator). To revert to a quiet-between-presses mic, spawn ffmpeg
+  per-press in `on_press` again — that brings back the cold start.
+- On release, `_buf` is snapshotted under a lock and `encode()` pipes the PCM through ffmpeg →
+  `_ptt.webm` (opus/mono/48k, same format the endpoint expects). Encoding runs in the "transcribing"
+  phase, off the hot path. The "too short" gate is on **raw PCM length** (`>4000` bytes ≈ 40ms), not the
+  encoded file size — opus shrinks silence to a few hundred bytes, so a size gate would misfire.
 - Paste with clipboard save/restore: `pbpaste` (save) → `pbcopy` text → **`Cmd+V` via the pynput
   Controller** (same process that listens to keys) → pause → `pbcopy` back. `pbpaste`/`pbcopy` are
   **text only**: images/files on the clipboard won't be preserved (ceiling; if needed — AppleScript with clipboard types).
@@ -69,7 +77,7 @@ These are compressed Opus frames (a psychoacoustic codec), not text. You have to
   the *current* layout. On a non-Latin layout (e.g. Russian ЙЦУКЕН) there's no key for Latin v, so pynput
   falls back to vk 0 = the **A** key → `Cmd+A` (select all) instead of paste. We press vk 9 (`kVK_ANSI_V`,
   the physical V key), which is layout-independent.
-- macOS permissions — **two distinct** privileges: **Input Monitoring** (pynput listens for Right Option,
+- macOS permissions — **two distinct** privileges: **Input Monitoring** (pynput listens for Right Command,
   recording) and **Accessibility** (synthesizing `Cmd+V`). Recording can work while paste stays silent —
   that means only Input Monitoring was granted. `ensure_accessibility()` raises the system dialog on start
   (`AXIsProcessTrustedWithOptions` + prompt) and adds the responsible app to the Accessibility list.

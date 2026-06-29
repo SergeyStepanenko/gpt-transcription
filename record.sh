@@ -4,13 +4,14 @@
 #   ./record.sh            -> 5 sec into whisper.webm
 #   ./record.sh 8          -> 8 sec
 #   ./record.sh 8 out.webm -> 8 sec into out.webm
-# Mic: env MIC (index from `ffmpeg -f avfoundation -list_devices true -i ""`). Default 1 = MacBook Pro Mic.
+# Mic: env MIC (index from `ffmpeg -f avfoundation -list_devices true -i ""`).
+# Default = built-in MacBook mic, auto-detected by name (reuses ptt.py's resolver).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 DUR="${1:-5}"
 OUT="${2:-whisper.webm}"
-MIC="${MIC:-1}"
+MIC="${MIC:-$(.venv/bin/python -c 'import ptt; print(ptt.MIC)')}"
 
 echo "Recording ${DUR}s from mic [$MIC] -> $OUT ..."
 ffmpeg -hide_banner -loglevel error \
