@@ -6,7 +6,7 @@ speak, release, and the transcription is pasted straight into whatever field you
 The clever (or cheeky) part: there's no local speech model and no API bill. The actual
 speech-to-text is done by **ChatGPT's own voice-input backend** (`/backend-api/transcribe`),
 replayed with your own logged-in session. This repo is just the thin local glue around it —
-a single Rust binary + `ffmpeg`.
+a single Rust binary.
 
 > **Disclaimer.** This calls a *private, undocumented* ChatGPT endpoint using **your own**
 > browser session cookies. It is not an official API, not affiliated with or endorsed by OpenAI,
@@ -17,14 +17,14 @@ a single Rust binary + `ffmpeg`.
 ## How it works
 
 ```
-startup: choose mic → choose warm/cold → preload audio cues
+startup: choose action → choose mic → choose warm/cold → preload audio cues
        │
-       ├─ warm: ffmpeg holds the mic open, streaming raw PCM ──► reader thread
+       ├─ warm: cpal holds the mic open, collecting f32 PCM ──► buffer
        └─ cold: mic off between presses (privacy, but ~1s lag)
        │
-hold Right Command ─► flag flips (warm) / ffmpeg spawns (cold) ─► recording
+hold Right Command ─► flag flips (warm) / cpal stream spawns (cold) ─► recording
        │
-   release ─► encode buffered PCM ──► WebM/Opus (mono, 48 kHz)
+   release ─► ffmpeg encodes buffered PCM ──► WebM/Opus (mono, 48 kHz)
        │
        ▼
  POST to chatgpt.com/backend-api/transcribe   ← with cookies + Chrome TLS fingerprint
@@ -33,20 +33,24 @@ hold Right Command ─► flag flips (warm) / ffmpeg spawns (cold) ─► record
    {"text": "..."}  ──►  clipboard swap  ──►  Cmd+V into the focused field  ──►  clipboard restored
 ```
 
-- **Same audio format as the browser.** `ffmpeg` produces mono/48 kHz Opus in WebM —
-  byte-for-byte what Chrome's MediaRecorder sends.
+- **Native mic capture via `cpal`.** No ffmpeg for recording — the mic is read directly through
+  Core Audio. Warm mode holds the stream open; cold mode creates/drops it per press.
+- **Same audio format as the browser.** `ffmpeg` encodes the captured f32 PCM into mono/48 kHz
+  Opus in WebM — the format Chrome's MediaRecorder sends.
 - **Cloudflare bypass via TLS impersonation.** Uses `wreq` (Rust HTTP client with BoringSSL)
-  to match Chrome's TLS/HTTP2 fingerprint.
+  with `Chrome136` emulation to match Chrome's TLS/HTTP2 fingerprint.
 - **Clipboard-preserving paste.** Transcript → clipboard → `Cmd+V` → restore previous content.
 - **Layout-independent paste.** `Cmd+V` is sent by physical keycode (`kVK_ANSI_V` = 9),
   works on any keyboard layout (Russian, etc.).
+- **Token validation.** JWT expiry is checked locally before each request — stale tokens
+  fail fast with a clear message instead of a cryptic 401.
 
 See [`AGENT.md`](AGENT.md) for deeper notes (EBML byte layout, why `cf_clearance` is IP-bound, etc.).
 
 ## Requirements
 
-- **macOS** (uses `avfoundation`, `CGEventTap`, `AudioToolbox`, and the Accessibility API).
-- **ffmpeg** — `brew install ffmpeg`
+- **macOS** (uses Core Audio via `cpal`, `CGEventTap`, `AudioToolbox`, and the Accessibility API).
+- **ffmpeg** — `brew install ffmpeg` (used for encoding PCM → WebM/Opus).
 - **Rust toolchain** — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - **cmake + go** — `brew install cmake go` (needed to build BoringSSL during `cargo build`)
 - A **logged-in ChatGPT account** (to copy your session token + cookies).
@@ -63,59 +67,39 @@ The binary is at `./target/release/ptt`.
 
 ### Credentials (`creds.env`)
 
-Open ChatGPT in your browser while logged in, then **DevTools → Network → any request whose URL
-starts with `https://chatgpt.com/backend-api` → Copy → Copy as cURL**, and pull out three values:
+The binary parses Chrome DevTools cURL directly — no external scripts needed.
+
+On first run (or when choosing **Replace credentials**), paste the cURL and press `Ctrl-D`:
+
+1. Open ChatGPT in your browser while logged in.
+2. DevTools → Network → any request whose URL starts with `https://chatgpt.com/backend-api`.
+3. Right-click → Copy → Copy as cURL.
+4. Paste into the prompt when `ptt` asks for it.
+
+The binary extracts three values automatically:
 
 | Key          | Where it comes from                                          |
 |--------------|--------------------------------------------------------------|
 | `TOKEN`      | the `authorization: Bearer <…>` header                       |
-| `ACCOUNT_ID` | the `chatgpt-account-id: <…>` header                         |
-| `COOKIES`    | the whole `cookie:` string (or everything after `-b '…'`)    |
+| `ACCOUNT_ID` | the `chatgpt-account-id: <…>` header (or JWT claim fallback) |
+| `COOKIES`    | the whole `cookie:` string (or `-b`/`--cookie` value)        |
+
+They are saved to `creds.env` (next to the binary, or CWD). The file is git-ignored.
+
+You can also create `creds.env` manually or via the included `extract_creds.sh` helper:
 
 ```bash
-cp creds.env.example creds.env   # then edit
-pbpaste | ./extract_creds.sh > creds.env   # or generate it from "Copy as cURL"
-```
-
-`extract_creds.sh` is a small Bash helper around the `curl_to_creds_env` function. It accepts
-a copied cURL command and prints a ready-to-save `creds.env` body:
-
-```bash
-TOKEN='...'
-ACCOUNT_ID='...'
-COOKIES='...'
-```
-
-Typical flow:
-
-```bash
-# 1. In Chrome DevTools: Network -> any https://chatgpt.com/backend-api request -> Copy -> Copy as cURL
-# 2. Then write the generated env file from your clipboard:
 pbpaste | ./extract_creds.sh > creds.env
 ```
 
-You can also call the function from another Bash script:
-
-```bash
-source ./extract_creds.sh
-curl_to_creds_env "$copied_curl" > creds.env
-```
-
-The helper reads from stdin when called without arguments, or from its arguments when provided.
-It extracts `TOKEN` from `authorization: Bearer ...`, `COOKIES` from `-b` / `--cookie` / `cookie:`,
-and `ACCOUNT_ID` from `chatgpt-account-id` when present. If that header is missing, it falls back
-to the `chatgpt_account_id` claim inside the JWT token.
-
-These expire within days — if you start getting `401`/`403`, copy fresh ones.
-You can replace them from the startup menu: choose **Replace credentials from Chrome DevTools cURL**
-and paste the copied cURL.
-`creds.env` is git-ignored, so your secrets never get committed.
+These expire within days — if you start getting `401`/`403`, restart `ptt` and choose
+**Replace credentials from Chrome DevTools cURL**.
 
 ### macOS permissions (one-time)
 
 Grant these to **the terminal app you launch `ptt` from** (Terminal, iTerm, VS Code, …):
 
-- **Microphone** — for `ffmpeg` to record.
+- **Microphone** — for `cpal` to capture audio.
 - **Input Monitoring** — for the global Right Command hotkey (CGEventTap).
 - **Accessibility** — to synthesize `Cmd+V`. On first run a system dialog pops up; enable the app,
   then **restart** (macOS only re-checks the permission at process start).
@@ -126,14 +110,24 @@ Grant these to **the terminal app you launch `ptt` from** (Terminal, iTerm, VS C
 ./target/release/ptt
 ```
 
-On startup you can start normally or replace saved credentials from a copied Chrome DevTools cURL.
-Then you'll be asked:
+On startup you'll see a menu:
+1. **Start push-to-talk** (or **Add credentials** if no `creds.env` found).
+2. **Replace credentials from Chrome DevTools cURL**.
+
+Then:
 1. **Select mic** — arrow keys to choose, Enter to confirm. Override with `MIC=2 ./target/release/ptt`.
 2. **Keep mic always on?** — "Yes" (warm, instant start, mic indicator always on) or
    "No" (cold, mic only during recording, ~1s lag on each press).
 
-Then hold **Right Command**, speak, release. The text is transcribed and pasted where your cursor is.
+Hold **Right Command**, speak, release. The text is transcribed and pasted where your cursor is.
 `Ctrl-C` quits.
+
+### Environment variables
+
+| Variable          | Effect                                                |
+|-------------------|-------------------------------------------------------|
+| `MIC=<index>`     | Skip mic selection, use device at given index         |
+| `PTT_DEBUG_AUDIO` | Write a `.raw.wav` alongside the encoded WebM for debugging |
 
 ## Legacy
 
