@@ -1,4 +1,5 @@
 creds.env
+creds.env.bak
 curl
 *.webm
 __pycache__/
