@@ -1,6 +1,4 @@
 creds.env
 curl
 *.webm
-.venv/
-__pycache__/
 /target/

@@ -93,4 +93,4 @@ These are compressed Opus frames (a psychoacoustic codec), not text. You have to
 - New UX: second startup question — warm (mic always on, instant) vs cold (mic on demand, ~1s lag).
   Warm = the v0.2 behavior (ffmpeg holds the mic open, reader thread, flag flip).
   Cold = ffmpeg spawns/kills per press (orange indicator off between presses).
-- Python files moved to `legacy/` for reference.
+- Python files removed (were in `legacy/`).

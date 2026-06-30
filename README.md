@@ -86,11 +86,7 @@ The binary extracts three values automatically:
 
 They are saved to `creds.env` (next to the binary, or CWD). The file is git-ignored.
 
-You can also create `creds.env` manually or via the included `extract_creds.sh` helper:
-
-```bash
-pbpaste | ./extract_creds.sh > creds.env
-```
+You can also create `creds.env` manually with the same three keys.
 
 These expire within days — if you start getting `401`/`403`, restart `ptt` and choose
 **Replace credentials from Chrome DevTools cURL**.
@@ -128,10 +124,6 @@ Hold **Right Command**, speak, release. The text is transcribed and pasted where
 |-------------------|-------------------------------------------------------|
 | `MIC=<index>`     | Skip mic selection, use device at given index         |
 | `PTT_DEBUG_AUDIO` | Write a `.raw.wav` alongside the encoded WebM for debugging |
-
-## Legacy
-
-The original Python implementation is preserved in `legacy/` for reference.
 
 ## License
 
