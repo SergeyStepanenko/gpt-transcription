@@ -82,3 +82,15 @@ These are compressed Opus frames (a psychoacoustic codec), not text. You have to
   that means only Input Monitoring was granted. `ensure_accessibility()` raises the system dialog on start
   (`AXIsProcessTrustedWithOptions` + prompt) and adds the responsible app to the Accessibility list.
 - Plus **Microphone** for ffmpeg.
+
+## v0.3: Rust port + warm/cold runtime choice
+
+- Ported from Python to Rust (single binary `ptt` via `cargo build --release`).
+- `curl_cffi` → `wreq` (same Chrome TLS fingerprint approach, BoringSSL under the hood).
+- `pynput` → `CGEventTap` (direct Core Graphics FFI, listen-only tap on flagsChanged keycode 54).
+- `NSSound` → `AudioToolbox` (AudioServicesCreateSystemSoundID / AudioServicesPlaySystemSound).
+- `pyobjc ApplicationServices` → direct `extern "C"` to `AXIsProcessTrustedWithOptions`.
+- New UX: second startup question — warm (mic always on, instant) vs cold (mic on demand, ~1s lag).
+  Warm = the v0.2 behavior (ffmpeg holds the mic open, reader thread, flag flip).
+  Cold = ffmpeg spawns/kills per press (orange indicator off between presses).
+- Python files moved to `legacy/` for reference.

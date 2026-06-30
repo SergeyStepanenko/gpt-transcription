@@ -2,3 +2,4 @@ creds.env
 *.webm
 .venv/
 __pycache__/
+/target/
