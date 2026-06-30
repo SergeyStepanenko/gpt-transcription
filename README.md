@@ -1,5 +1,19 @@
 # gpt-transcription
 
+```
+                                                  ╭── chatgpt.com/backend-api/transcribe
+  ╭───╮                                           │   (multipart/form-data, WebM/Opus)
+  │o o│ ))) speaks ── mic ── [1a 45 df a3 ...] ───┤
+  │ ᴗ │                      (WebM binary)        │
+  ╰─┬─╯                                           ╰── {"text":"Hello, world"} ─╮
+  ┌─┴─┐                                                                        │
+  │ ⌘ │ hold Right Cmd                                                         ▼
+  └───┘                                                                ╭──────────────╮
+                                                                       │              │
+    release ── encode ── POST ── transcribe ── paste (Cmd+V) ─────────>│ Hello, world │
+                                                                       ╰──────────────╯
+```
+
 Push-to-talk dictation for macOS that turns your voice into text **anywhere** — hold a key,
 speak, release, and the transcription is pasted straight into whatever field your cursor is in.
 
@@ -107,10 +121,12 @@ Grant these to **the terminal app you launch `ptt` from** (Terminal, iTerm, VS C
 ```
 
 On startup you'll see a menu:
+
 1. **Start push-to-talk** (or **Add credentials** if no `creds.env` found).
 2. **Replace credentials from Chrome DevTools cURL**.
 
 Then:
+
 1. **Select mic** — arrow keys to choose, Enter to confirm. Override with `MIC=2 ./target/release/ptt`.
 2. **Keep mic always on?** — "Yes" (warm, instant start, mic indicator always on) or
    "No" (cold, mic only during recording, ~1s lag on each press).
