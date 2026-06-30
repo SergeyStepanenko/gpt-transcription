@@ -1,6 +1,39 @@
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 
 use crate::audio::AudioDevice;
+
+pub enum StartupAction {
+    Start,
+    ReplaceCredentials,
+}
+
+pub fn choose_startup_action(has_creds: bool) -> StartupAction {
+    if !atty::is(atty::Stream::Stdin) {
+        return StartupAction::Start;
+    }
+
+    let items: &[&str] = if has_creds {
+        &[
+            "Start push-to-talk",
+            "Replace credentials from Chrome DevTools cURL",
+        ]
+    } else {
+        &["Add credentials from Chrome DevTools cURL"]
+    };
+
+    let sel = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Startup")
+        .items(items)
+        .default(0)
+        .interact()
+        .expect("startup selection failed");
+
+    if has_creds && sel == 0 {
+        StartupAction::Start
+    } else {
+        StartupAction::ReplaceCredentials
+    }
+}
 
 pub fn choose_mic(devices: &[AudioDevice]) -> String {
     if let Ok(env) = std::env::var("MIC") {
@@ -43,8 +76,8 @@ pub fn choose_warm() -> bool {
     }
 
     let items = &[
-        "Yes — instant recording (mic stays active, indicator stays on)",
         "No  — mic only while recording (more private, ~1s startup delay)",
+        "Yes — instant recording (mic stays active, indicator stays on)",
     ];
 
     let sel = Select::with_theme(&ColorfulTheme::default())
@@ -54,5 +87,5 @@ pub fn choose_warm() -> bool {
         .interact()
         .expect("warm/cold selection failed");
 
-    sel == 0
+    sel == 1
 }

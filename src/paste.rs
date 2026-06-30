@@ -15,7 +15,7 @@ extern "C" {
         num_values: isize,
         key_callbacks: *const c_void,
         value_callbacks: *const c_void,
-        ) -> *const c_void;
+    ) -> *const c_void;
     fn CFRelease(cf: *const c_void);
 }
 
@@ -47,7 +47,9 @@ pub fn ensure_accessibility() {
     };
 
     if !trusted {
-        eprintln!("⚠️  No Accessibility permission — paste (Cmd+V) won't work (recording still will).");
+        eprintln!(
+            "⚠️  No Accessibility permission — paste (Cmd+V) won't work (recording still will)."
+        );
         eprintln!("    System Settings → Privacy & Security → Accessibility: enable the app");
         eprintln!("    you launch ptt from. Then restart.");
     }

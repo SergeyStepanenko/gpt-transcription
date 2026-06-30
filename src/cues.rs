@@ -37,20 +37,27 @@ impl Cue {
             let mut sid: SystemSoundID = 0;
             let status = AudioServicesCreateSystemSoundID(url, &mut sid);
             CFRelease(url);
-            assert!(status == 0, "AudioServicesCreateSystemSoundID failed: {status}");
+            assert!(
+                status == 0,
+                "AudioServicesCreateSystemSoundID failed: {status}"
+            );
             sid
         };
         Cue { sound_id }
     }
 
     pub fn play(&self) {
-        unsafe { AudioServicesPlaySystemSound(self.sound_id); }
+        unsafe {
+            AudioServicesPlaySystemSound(self.sound_id);
+        }
     }
 }
 
 impl Drop for Cue {
     fn drop(&mut self) {
-        unsafe { AudioServicesDisposeSystemSoundID(self.sound_id); }
+        unsafe {
+            AudioServicesDisposeSystemSoundID(self.sound_id);
+        }
     }
 }
 

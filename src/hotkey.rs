@@ -1,4 +1,6 @@
-use core_graphics::event::{CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType};
+use core_graphics::event::{
+    CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
+};
 use std::os::raw::c_void;
 
 // CGEventTapCallBack signature

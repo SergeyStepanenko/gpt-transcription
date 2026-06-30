@@ -22,7 +22,10 @@ fn main() {
     } else {
         PathBuf::from(".")
     };
-    let creds = config::load_creds(&creds_dir);
+    let creds = match menu::choose_startup_action(config::has_usable_creds(&creds_dir)) {
+        menu::StartupAction::Start => config::load_or_create_creds(&creds_dir),
+        menu::StartupAction::ReplaceCredentials => config::replace_creds_from_curl(&creds_dir),
+    };
 
     paste::ensure_accessibility();
 
@@ -44,13 +47,16 @@ fn main() {
         None
     };
 
-    println!("Push-to-talk ready. Mic [{mic}], mode: {}. Hold Right Command to record. Ctrl-C to quit.",
-             if warm { "warm" } else { "cold" });
+    println!(
+        "Push-to-talk ready. Mic [{mic}], mode: {}. Hold Right Command to record. Ctrl-C to quit.",
+        if warm { "warm" } else { "cold" }
+    );
 
     ctrlc::set_handler(move || {
         println!("\nbye");
         hotkey::stop_run_loop();
-    }).ok();
+    })
+    .ok();
 
     struct Handler {
         rec: Arc<AtomicBool>,
@@ -61,10 +67,10 @@ fn main() {
         creds: config::Creds,
         cue_start: cues::Cue,
         cue_stop: cues::Cue,
-        capture_buf: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
+        capture_buf: Option<Arc<std::sync::Mutex<audio::AudioData>>>,
         capture_rec: Option<Arc<AtomicBool>>,
         // Cold mode: the recording thread collects PCM here
-        cold_buf: Arc<std::sync::Mutex<Vec<u8>>>,
+        cold_buf: Arc<std::sync::Mutex<audio::AudioData>>,
     }
 
     impl hotkey::HotkeyHandler for Handler {
@@ -75,18 +81,22 @@ fn main() {
 
             if self.warm {
                 if let Some(ref buf) = self.capture_buf {
-                    buf.lock().unwrap().clear();
+                    buf.lock().unwrap().samples.clear();
                 }
                 if let Some(ref r) = self.capture_rec {
                     r.store(true, Ordering::Relaxed);
                 }
+                self.rec.store(true, Ordering::Relaxed);
             } else {
                 // Cold: spawn ffmpeg in a thread
-                self.cold_buf.lock().unwrap().clear();
+                *self.cold_buf.lock().unwrap() = audio::AudioData {
+                    samples: Vec::new(),
+                    sample_rate: 48_000,
+                };
+                self.rec.store(true, Ordering::Relaxed);
                 let mic = self.mic.clone();
                 let rec = Arc::clone(&self.rec);
                 let cold_buf = Arc::clone(&self.cold_buf);
-                // rec will be set to true below — the thread reads it
                 std::thread::spawn(move || {
                     if let Some(pcm) = audio::cold_record(&mic, rec) {
                         *cold_buf.lock().unwrap() = pcm;
@@ -94,7 +104,6 @@ fn main() {
                 });
             }
 
-            self.rec.store(true, Ordering::Relaxed);
             self.cue_start.play();
             println!("● recording...");
         }
@@ -121,11 +130,19 @@ fn main() {
             let pcm = if self.warm {
                 self.capture_buf.as_ref().and_then(|buf| {
                     let b = buf.lock().unwrap();
-                    if b.len() > 4000 { Some(b.clone()) } else { None }
+                    if b.is_long_enough() {
+                        Some(b.clone())
+                    } else {
+                        None
+                    }
                 })
             } else {
                 let b = self.cold_buf.lock().unwrap();
-                if b.len() > 4000 { Some(b.clone()) } else { None }
+                if b.is_long_enough() {
+                    Some(b.clone())
+                } else {
+                    None
+                }
             };
 
             if let Some(pcm) = pcm {
@@ -157,7 +174,10 @@ fn main() {
         cue_stop: cues::Cue::load("/System/Library/Sounds/Bottle.aiff"),
         capture_buf: capture.as_ref().map(|c| Arc::clone(&c.buf)),
         capture_rec: capture.as_ref().map(|c| Arc::clone(&c.rec)),
-        cold_buf: Arc::new(std::sync::Mutex::new(Vec::new())),
+        cold_buf: Arc::new(std::sync::Mutex::new(audio::AudioData {
+            samples: Vec::new(),
+            sample_rate: 48_000,
+        })),
     };
 
     // This blocks on CFRunLoop

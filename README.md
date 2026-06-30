@@ -63,8 +63,8 @@ The binary is at `./target/release/ptt`.
 
 ### Credentials (`creds.env`)
 
-Open ChatGPT in your browser while logged in, then **DevTools → Network → any request to
-`chatgpt.com` → Copy → Copy as cURL**, and pull out three values:
+Open ChatGPT in your browser while logged in, then **DevTools → Network → any request whose URL
+starts with `https://chatgpt.com/backend-api` → Copy → Copy as cURL**, and pull out three values:
 
 | Key          | Where it comes from                                          |
 |--------------|--------------------------------------------------------------|
@@ -89,7 +89,7 @@ COOKIES='...'
 Typical flow:
 
 ```bash
-# 1. In Chrome DevTools: Network -> request to chatgpt.com -> Copy -> Copy as cURL
+# 1. In Chrome DevTools: Network -> any https://chatgpt.com/backend-api request -> Copy -> Copy as cURL
 # 2. Then write the generated env file from your clipboard:
 pbpaste | ./extract_creds.sh > creds.env
 ```
@@ -107,6 +107,8 @@ and `ACCOUNT_ID` from `chatgpt-account-id` when present. If that header is missi
 to the `chatgpt_account_id` claim inside the JWT token.
 
 These expire within days — if you start getting `401`/`403`, copy fresh ones.
+You can replace them from the startup menu: choose **Replace credentials from Chrome DevTools cURL**
+and paste the copied cURL.
 `creds.env` is git-ignored, so your secrets never get committed.
 
 ### macOS permissions (one-time)
@@ -124,7 +126,8 @@ Grant these to **the terminal app you launch `ptt` from** (Terminal, iTerm, VS C
 ./target/release/ptt
 ```
 
-On startup you'll be asked two questions:
+On startup you can start normally or replace saved credentials from a copied Chrome DevTools cURL.
+Then you'll be asked:
 1. **Select mic** — arrow keys to choose, Enter to confirm. Override with `MIC=2 ./target/release/ptt`.
 2. **Keep mic always on?** — "Yes" (warm, instant start, mic indicator always on) or
    "No" (cold, mic only during recording, ~1s lag on each press).
