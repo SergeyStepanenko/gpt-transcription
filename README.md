@@ -1,17 +1,21 @@
 # gpt-transcription
 
 ```
-                                                  ╭── chatgpt.com/backend-api/transcribe
-  ╭───╮                                           │   (multipart/form-data, WebM/Opus)
-  │o o│ ))) speaks ── mic ── [1a 45 df a3 ...] ───┤
-  │ ᴗ │                      (WebM binary)        │
-  ╰─┬─╯                                           ╰── {"text":"Hello, world"} ─╮
-  ┌─┴─┐                                                                        │
-  │ ⌘ │ hold Right Cmd                                                         ▼
-  └───┘                                                                ╭──────────────╮
-                                                                       │              │
-    release ── encode ── POST ── transcribe ── paste (Cmd+V) ─────────>│ Hello, world │
-                                                                       ╰──────────────╯
+  ╭───╮
+  │o o│ ))) hold a key, speak ──► record audio
+  │ ᴗ │
+  ╰─┬─╯                              │
+  ┌─┴─┐                              ▼
+  │ ⌘ │          send to ChatGPT's transcribe backend   (free, no API bill)
+  └───┘                              │
+                                     ▼
+                            {"text": "Hello, world"}
+                                     │
+                          clipboard swap ── Cmd+V
+                                     ▼
+                            ╭──────────────╮
+                            │ Hello, world │  ◄ pasted into focused field
+                            ╰──────────────╯
 ```
 
 Push-to-talk dictation for macOS that turns your voice into text **anywhere** — hold a key,
