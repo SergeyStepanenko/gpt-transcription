@@ -10,15 +10,15 @@ pub fn transcribe(audio: &Path, creds: &Creds) -> Result<String, String> {
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
 
+    // Per-attempt timeout + up to ATTEMPTS tries. A timed-out attempt drops its
+    // request future, which aborts the in-flight connection — so the slow server
+    // response is cancelled (or, if it still completes, simply ignored) and we
+    // start a fresh request. Only one request is ever in flight at a time.
+    const ATTEMPTS: usize = 3;
+    const PER_TRY: std::time::Duration = std::time::Duration::from_secs(10);
+
     rt.block_on(async {
         let data = std::fs::read(audio).map_err(|e| format!("read {}: {e}", audio.display()))?;
-
-        let part = rquest::multipart::Part::bytes(data)
-            .file_name("whisper.webm")
-            .mime_str("audio/webm;codecs=opus")
-            .map_err(|e| format!("multipart: {e}"))?;
-
-        let form = rquest::multipart::Form::new().part("file", part);
 
         use rquest_util::Emulation;
 
@@ -27,31 +27,90 @@ pub fn transcribe(audio: &Path, creds: &Creds) -> Result<String, String> {
             .build()
             .map_err(|e| format!("rquest client: {e}"))?;
 
-        let resp = client
-            .post("https://chatgpt.com/backend-api/transcribe")
-            .header("authorization", format!("Bearer {}", creds.token))
-            .header("chatgpt-account-id", &creds.account_id)
-            .header("cookie", &creds.cookies)
-            .header("origin", "https://chatgpt.com")
-            .header("referer", "https://chatgpt.com/")
-            .multipart(form)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
+        let data = &data;
+        let client = &client;
+        retry(ATTEMPTS, move |_attempt| async move {
+            let part = match rquest::multipart::Part::bytes(data.clone())
+                .file_name("whisper.webm")
+                .mime_str("audio/webm;codecs=opus")
+            {
+                Ok(part) => part,
+                Err(e) => return Step::FailFast(format!("multipart: {e}")),
+            };
+            let form = rquest::multipart::Form::new().part("file", part);
 
-        let status = resp.status();
-        let body = resp.text().await.map_err(|e| format!("read body: {e}"))?;
+            let resp = client
+                .post("https://chatgpt.com/backend-api/transcribe")
+                .header("authorization", format!("Bearer {}", creds.token))
+                .header("chatgpt-account-id", &creds.account_id)
+                .header("cookie", &creds.cookies)
+                .header("origin", "https://chatgpt.com")
+                .header("referer", "https://chatgpt.com/")
+                .multipart(form)
+                .timeout(PER_TRY)
+                .send()
+                .await;
 
-        if !status.is_success() {
-            return Err(auth_error(status.as_u16(), &body));
-        }
+            let resp = match resp {
+                Ok(resp) => resp,
+                Err(e) => return Step::Retry(format!("request failed: {e}")),
+            };
 
-        let json: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| format!("json parse: {e}"))?;
+            let status = resp.status().as_u16();
+            let body = match resp.text().await {
+                Ok(body) => body,
+                Err(e) => return Step::Retry(format!("read body: {e}")),
+            };
 
-        Ok(json["text"].as_str().unwrap_or("").to_string())
+            outcome(status, &body)
+        })
+        .await
     })
+}
+
+/// One attempt's outcome: finish with text, give up immediately, or retry.
+enum Step {
+    Done(String),
+    FailFast(String),
+    Retry(String),
+}
+
+/// Run `step` up to `attempts` times. Return on the first `Done` (text) or
+/// `FailFast` (error); on `Retry`, try again. After the last attempt, surface
+/// the most recent retryable error.
+async fn retry<F, Fut>(attempts: usize, mut step: F) -> Result<String, String>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = Step>,
+{
+    let mut last_err = String::new();
+    for attempt in 1..=attempts {
+        match step(attempt).await {
+            Step::Done(text) => return Ok(text),
+            Step::FailFast(e) => return Err(e),
+            Step::Retry(e) => {
+                eprintln!("transcribe: attempt {attempt}/{attempts} failed ({e})");
+                last_err = e;
+            }
+        }
+    }
+    Err(format!("transcribe failed after {attempts} attempts: {last_err}"))
+}
+
+/// Classify an HTTP response into a retry decision.
+fn outcome(status: u16, body: &str) -> Step {
+    if (200..300).contains(&status) {
+        return match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(json) => Step::Done(json["text"].as_str().unwrap_or("").to_string()),
+            Err(e) => Step::FailFast(format!("json parse: {e}")),
+        };
+    }
+    // Auth/permission failures won't change on retry — give up immediately.
+    if matches!(status, 401 | 403) {
+        return Step::FailFast(auth_error(status, body));
+    }
+    // 5xx, 429, other transient server errors — worth retrying.
+    Step::Retry(auth_error(status, body))
 }
 
 fn validate_token(token: &str) -> Result<(), String> {
@@ -197,5 +256,101 @@ mod tests {
     fn explains_auth_statuses() {
         assert!(auth_error(401, "nope").contains("TOKEN"));
         assert!(auth_error(403, "nope").contains("cookies/Cloudflare"));
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    #[test]
+    fn outcome_success_extracts_text() {
+        match outcome(200, r#"{"text":"hello world"}"#) {
+            Step::Done(t) => assert_eq!(t, "hello world"),
+            _ => panic!("expected Done"),
+        }
+    }
+
+    #[test]
+    fn outcome_success_missing_text_is_empty() {
+        match outcome(200, r#"{"other":1}"#) {
+            Step::Done(t) => assert_eq!(t, ""),
+            _ => panic!("expected Done"),
+        }
+    }
+
+    #[test]
+    fn outcome_bad_json_fails_fast() {
+        match outcome(200, "not json") {
+            Step::FailFast(e) => assert!(e.contains("json parse")),
+            _ => panic!("expected FailFast on unparseable success body"),
+        }
+    }
+
+    #[test]
+    fn outcome_auth_statuses_fail_fast() {
+        assert!(matches!(outcome(401, "x"), Step::FailFast(_)));
+        assert!(matches!(outcome(403, "x"), Step::FailFast(_)));
+    }
+
+    #[test]
+    fn outcome_server_errors_retry() {
+        assert!(matches!(outcome(500, "x"), Step::Retry(_)));
+        assert!(matches!(outcome(503, "x"), Step::Retry(_)));
+        assert!(matches!(outcome(429, "x"), Step::Retry(_)));
+    }
+
+    #[test]
+    fn retry_returns_first_success_without_retrying() {
+        let calls = std::cell::Cell::new(0);
+        let out = block_on(retry(3, |_| {
+            calls.set(calls.get() + 1);
+            async { Step::Done("ok".into()) }
+        }));
+        assert_eq!(out.unwrap(), "ok");
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn retry_recovers_after_transient_failures() {
+        let calls = std::cell::Cell::new(0);
+        let out = block_on(retry(3, |attempt| {
+            calls.set(calls.get() + 1);
+            async move {
+                if attempt < 3 {
+                    Step::Retry(format!("timeout on {attempt}"))
+                } else {
+                    Step::Done("late".into())
+                }
+            }
+        }));
+        assert_eq!(out.unwrap(), "late");
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn retry_gives_up_after_all_attempts() {
+        let calls = std::cell::Cell::new(0);
+        let out = block_on(retry(3, |_| {
+            calls.set(calls.get() + 1);
+            async { Step::Retry("timeout".into()) }
+        }));
+        let err = out.unwrap_err();
+        assert!(err.contains("after 3 attempts"), "got: {err}");
+        assert!(err.contains("timeout"), "got: {err}");
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn retry_fail_fast_does_not_retry() {
+        let calls = std::cell::Cell::new(0);
+        let out = block_on(retry(3, |_| {
+            calls.set(calls.get() + 1);
+            async { Step::FailFast("401 nope".into()) }
+        }));
+        assert_eq!(out.unwrap_err(), "401 nope");
+        assert_eq!(calls.get(), 1);
     }
 }
